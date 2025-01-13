@@ -3260,7 +3260,8 @@ impl Connection {
             delay_micros
         );
 
-        frame::Ack::encode(delay as _, space.pending_acks.ranges(), ecn, buf);
+        // TODO(@divma): connect here when path management is ready
+        frame::Ack::encode(None, delay as _, space.pending_acks.ranges(), ecn, buf);
         stats.frame_tx.acks += 1;
     }
 

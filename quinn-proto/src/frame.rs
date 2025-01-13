@@ -383,6 +383,7 @@ impl<'a> IntoIterator for &'a Ack {
 
 impl Ack {
     pub fn encode<W: BufMut>(
+        path_id: Option<VarInt>,
         delay: u64,
         ranges: &ArrayRangeSet,
         ecn: Option<&EcnCounts>,
@@ -392,11 +393,17 @@ impl Ack {
         let first = rest.next().unwrap();
         let largest = first.end - 1;
         let first_size = first.end - first.start;
-        buf.write(if ecn.is_some() {
-            Type::ACK_ECN
-        } else {
-            Type::ACK
-        });
+        let kind = match (path_id.is_some(), ecn.is_some()) {
+            (true, true) => Type::PATH_ACK_ECN,
+            (true, false) => Type::PATH_ACK,
+            (false, true) => Type::ACK_ECN,
+            (false, false) => Type::ACK,
+        };
+        buf.write(kind);
+        if let Some(id) = path_id {
+            buf.write(id);
+        }
+
         buf.write_var(largest);
         buf.write_var(delay);
         buf.write_var(ranges.len() as u64 - 1);
@@ -949,6 +956,7 @@ mod test {
     use crate::coding::Codec;
     use assert_matches::assert_matches;
 
+    #[track_caller]
     fn frames(buf: Vec<u8>) -> Vec<Frame> {
         Iter::new(Bytes::from(buf))
             .unwrap()
@@ -970,11 +978,41 @@ mod test {
             ect1: 24,
             ce: 12,
         };
-        Ack::encode(42, &ranges, Some(&ECN), &mut buf);
+        Ack::encode(None, 42, &ranges, Some(&ECN), &mut buf);
         let frames = frames(buf);
         assert_eq!(frames.len(), 1);
         match frames[0] {
             Frame::Ack(ref ack) => {
+                let mut packets = ack.iter().flatten().collect::<Vec<_>>();
+                packets.sort_unstable();
+                assert_eq!(&packets[..], PACKETS);
+                assert_eq!(ack.ecn, Some(ECN));
+            }
+            ref x => panic!("incorrect frame {x:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::range_plus_one)]
+    fn path_ack_coding() {
+        const PACKETS: &[u64] = &[1, 2, 3, 5, 10, 11, 14];
+        let mut ranges = ArrayRangeSet::new();
+        for &packet in PACKETS {
+            ranges.insert(packet..packet + 1);
+        }
+        let mut buf = Vec::new();
+        const ECN: EcnCounts = EcnCounts {
+            ect0: 42,
+            ect1: 24,
+            ce: 12,
+        };
+        const PATH_ID: Option<VarInt> = Some(VarInt::MAX);
+        Ack::encode(PATH_ID, 42, &ranges, Some(&ECN), &mut buf);
+        let frames = frames(buf);
+        assert_eq!(frames.len(), 1);
+        match frames[0] {
+            Frame::Ack(ref ack) => {
+                assert_eq!(ack.path_id, PATH_ID);
                 let mut packets = ack.iter().flatten().collect::<Vec<_>>();
                 packets.sort_unstable();
                 assert_eq!(&packets[..], PACKETS);
