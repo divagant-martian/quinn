@@ -165,6 +165,8 @@ impl TransportParameters {
             min_ack_delay: Some(
                 VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap(),
             ),
+            // TODO(@divma): TransportConfig or..?
+            initial_max_path_id: config.initial_max_path_id,
             ..Self::default()
         }
     }
