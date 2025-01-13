@@ -957,11 +957,7 @@ impl AckFrequency {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PathAbandon {
     path_id: VarInt,
-    // TODO(@divma):
-    // unclear if this is transport error code. It mentions NO_ERROR(0x0) which matches the no
-    // error erro code of transport parameters.. but it would just be something else?
-    //
-    // maybe being a frame this is just a transport error code??
+    // TODO(@divma): this is TransportErrorCode plus two new errors
     error_code: TransportErrorCode,
 }
 
