@@ -55,6 +55,7 @@ pub struct FrameStats {
     pub stop_sending: u64,
     pub stream: u64,
     pub path_abandon: u64,
+    pub path_available: u64,
 }
 
 impl FrameStats {
@@ -97,6 +98,8 @@ impl FrameStats {
             Frame::ImmediateAck => self.immediate_ack += 1,
             Frame::HandshakeDone => self.handshake_done = self.handshake_done.saturating_add(1),
             Frame::PathAbandon(_) => self.path_abandon = self.path_abandon.saturating_add(1),
+            // TODO(@divma): split stats?
+            Frame::PathAvailable(_) => self.path_available = self.path_available.saturating_add(1),
         }
     }
 }

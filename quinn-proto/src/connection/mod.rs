@@ -2880,6 +2880,9 @@ impl Connection {
                 Frame::PathAbandon(_) => {
                     // TODO(@divma): jump ship?
                 }
+                Frame::PathAvailable(_) => {
+                    // TODO(@divma): do stuff
+                }
             }
         }
 

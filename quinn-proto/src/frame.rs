@@ -136,7 +136,9 @@ frame_types! {
     // Multipath
     PATH_ACK = 0x15228c00,
     PATH_ACK_ECN = 0x15228c01,
-    PATH_ABANDON = 0x15228c08,
+    PATH_ABANDON = 0x15228c05,
+    PATH_BACKUP = 0x15228c07,
+    PATH_AVAILABLE = 0x15228c08,
 }
 
 const STREAM_TYS: RangeInclusive<u64> = RangeInclusive::new(0x08, 0x0f);
@@ -168,6 +170,7 @@ pub(crate) enum Frame {
     ImmediateAck,
     HandshakeDone,
     PathAbandon(PathAbandon),
+    PathAvailable(PathAvailable),
 }
 
 impl Frame {
@@ -211,6 +214,7 @@ impl Frame {
             ImmediateAck => Type::IMMEDIATE_ACK,
             HandshakeDone => Type::HANDSHAKE_DONE,
             PathAbandon(_) => Type::PATH_ABANDON,
+            PathAvailable(ref path_avaiable) => path_avaiable.get_type(),
         }
     }
 
@@ -709,6 +713,10 @@ impl Iter {
             }),
             Type::IMMEDIATE_ACK => Frame::ImmediateAck,
             Type::PATH_ABANDON => Frame::PathAbandon(PathAbandon::read(&mut self.bytes)?),
+            Type::PATH_BACKUP | Type::PATH_AVAILABLE => {
+                let is_backup = ty == Type::PATH_BACKUP;
+                Frame::PathAvailable(PathAvailable::read(&mut self.bytes, is_backup)?)
+            }
             _ => {
                 if let Some(s) = ty.stream() {
                     Frame::Stream(Stream {
@@ -979,6 +987,41 @@ impl PathAbandon {
     }
 }
 
+// TODO(@divma): split?
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PathAvailable {
+    is_backup: bool,
+    path_id: VarInt,
+    status_seq_no: VarInt,
+}
+
+impl PathAvailable {
+    // TODO(@divma): docs
+    pub(crate) fn write<W: BufMut>(&self, buf: &mut W) {
+        buf.write(self.get_type());
+        buf.write(self.path_id);
+        buf.write(self.status_seq_no);
+    }
+
+    // TODO(@divma): docs
+    // should only be called after the frame type has been verified
+    pub(crate) fn read<R: Buf>(bytes: &mut R, is_backup: bool) -> coding::Result<Self> {
+        Ok(Self {
+            is_backup,
+            path_id: bytes.get()?,
+            status_seq_no: bytes.get()?,
+        })
+    }
+
+    fn get_type(&self) -> Type {
+        if self.is_backup {
+            Type::PATH_BACKUP
+        } else {
+            Type::PATH_AVAILABLE
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1091,6 +1134,24 @@ mod test {
         assert_eq!(decoded.len(), 1);
         match decoded.pop().expect("non empty") {
             Frame::PathAbandon(decoded) => assert_eq!(decoded, abandon),
+            x => panic!("incorrect frame {x:?}"),
+        }
+    }
+
+    #[test]
+    fn test_path_available_roundtrip() {
+        let path_avaiable = PathAvailable {
+            is_backup: true,
+            path_id: VarInt(42),
+            status_seq_no: VarInt(73),
+        };
+        let mut buf = Vec::new();
+        path_avaiable.write(&mut buf);
+
+        let mut decoded = frames(buf);
+        assert_eq!(decoded.len(), 1);
+        match decoded.pop().expect("non empty") {
+            Frame::PathAvailable(decoded) => assert_eq!(decoded, path_avaiable),
             x => panic!("incorrect frame {x:?}"),
         }
     }
