@@ -133,6 +133,9 @@ frame_types! {
     ACK_FREQUENCY = 0xaf,
     IMMEDIATE_ACK = 0x1f,
     // DATAGRAM
+    // Multipath
+    PATH_ACK = 0x15228c00,
+    PATH_ACK_ECN = 0x15228c01,
 }
 
 const STREAM_TYS: RangeInclusive<u64> = RangeInclusive::new(0x08, 0x0f);
@@ -337,8 +340,10 @@ impl ApplicationClose {
     }
 }
 
+// TODO(@divma): for now reusing the struct, good or bad idea?
 #[derive(Clone, Eq, PartialEq)]
 pub struct Ack {
+    pub path_id: Option<VarInt>,
     pub largest: u64,
     pub delay: u64,
     pub additional: Bytes,
@@ -619,7 +624,12 @@ impl Iter {
             Type::RETIRE_CONNECTION_ID => Frame::RetireConnectionId {
                 sequence: self.bytes.get_var()?,
             },
-            Type::ACK | Type::ACK_ECN => {
+            Type::ACK | Type::ACK_ECN | Type::PATH_ACK | Type::PATH_ACK_ECN => {
+                let path_id = if ty == Type::PATH_ACK || ty == Type::PATH_ACK_ECN {
+                    Some(self.bytes.get()?)
+                } else {
+                    None
+                };
                 let largest = self.bytes.get_var()?;
                 let delay = self.bytes.get_var()?;
                 let extra_blocks = self.bytes.get_var()? as usize;
@@ -627,17 +637,18 @@ impl Iter {
                 scan_ack_blocks(&mut self.bytes, largest, extra_blocks)?;
                 let end = self.bytes.position() as usize;
                 Frame::Ack(Ack {
+                    path_id,
                     delay,
                     largest,
                     additional: self.bytes.get_ref().slice(start..end),
-                    ecn: if ty != Type::ACK_ECN {
-                        None
-                    } else {
+                    ecn: if ty == Type::ACK_ECN || ty == Type::PATH_ACK_ECN {
                         Some(EcnCounts {
                             ect0: self.bytes.get_var()?,
                             ect1: self.bytes.get_var()?,
                             ce: self.bytes.get_var()?,
                         })
+                    } else {
+                        None
                     },
                 })
             }
@@ -927,6 +938,10 @@ impl AckFrequency {
         buf.write(self.reordering_threshold);
     }
 }
+
+/* Multipath <https://datatracker.ietf.org/doc/draft-ietf-quic-multipath/> */
+
+// pub(crate)
 
 #[cfg(test)]
 mod test {
