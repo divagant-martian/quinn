@@ -139,6 +139,7 @@ frame_types! {
     PATH_ABANDON = 0x15228c05,
     PATH_BACKUP = 0x15228c07,
     PATH_AVAILABLE = 0x15228c08,
+    PATH_NEW_CONNECTION_ID = 0x15228c09,
 }
 
 const STREAM_TYS: RangeInclusive<u64> = RangeInclusive::new(0x08, 0x0f);
@@ -206,7 +207,7 @@ impl Frame {
             }
             PathChallenge(_) => Type::PATH_CHALLENGE,
             PathResponse(_) => Type::PATH_RESPONSE,
-            NewConnectionId { .. } => Type::NEW_CONNECTION_ID,
+            NewConnectionId(cid) => cid.get_type(),
             Crypto(_) => Type::CRYPTO,
             NewToken { .. } => Type::NEW_TOKEN,
             Datagram(_) => Type(*DATAGRAM_TYS.start()),
@@ -577,6 +578,7 @@ impl Iter {
         Ok(self.bytes.get_ref().slice(start..(start + len as usize)))
     }
 
+    #[track_caller]
     fn try_next(&mut self) -> Result<Frame, IterErr> {
         let ty = self.bytes.get::<Type>()?;
         self.last_ty = Some(ty);
@@ -669,34 +671,9 @@ impl Iter {
             }
             Type::PATH_CHALLENGE => Frame::PathChallenge(self.bytes.get()?),
             Type::PATH_RESPONSE => Frame::PathResponse(self.bytes.get()?),
-            Type::NEW_CONNECTION_ID => {
-                let sequence = self.bytes.get_var()?;
-                let retire_prior_to = self.bytes.get_var()?;
-                if retire_prior_to > sequence {
-                    return Err(IterErr::Malformed);
-                }
-                let length = self.bytes.get::<u8>()? as usize;
-                if length > MAX_CID_SIZE || length == 0 {
-                    return Err(IterErr::Malformed);
-                }
-                if length > self.bytes.remaining() {
-                    return Err(IterErr::UnexpectedEnd);
-                }
-                let mut stage = [0; MAX_CID_SIZE];
-                self.bytes.copy_to_slice(&mut stage[0..length]);
-                let id = ConnectionId::new(&stage[..length]);
-                if self.bytes.remaining() < 16 {
-                    return Err(IterErr::UnexpectedEnd);
-                }
-                let mut reset_token = [0; RESET_TOKEN_SIZE];
-                self.bytes.copy_to_slice(&mut reset_token);
-                Frame::NewConnectionId(NewConnectionId {
-                    sequence,
-                    retire_prior_to,
-                    id,
-                    reset_token: reset_token.into(),
-                })
-            }
+            Type::NEW_CONNECTION_ID | Type::PATH_NEW_CONNECTION_ID => Frame::NewConnectionId(
+                NewConnectionId::read(&mut self.bytes, ty == Type::PATH_NEW_CONNECTION_ID)?,
+            ),
             Type::CRYPTO => Frame::Crypto(Crypto {
                 offset: self.bytes.get_var()?,
                 data: self.take_len()?,
@@ -798,6 +775,7 @@ fn scan_ack_blocks(buf: &mut io::Cursor<Bytes>, largest: u64, n: usize) -> Resul
     Ok(())
 }
 
+#[derive(Debug)]
 enum IterErr {
     UnexpectedEnd,
     InvalidFrameId,
@@ -889,8 +867,9 @@ impl StopSending {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct NewConnectionId {
+    pub(crate) path_id: Option<VarInt>,
     pub(crate) sequence: u64,
     pub(crate) retire_prior_to: u64,
     pub(crate) id: ConnectionId,
@@ -899,12 +878,54 @@ pub(crate) struct NewConnectionId {
 
 impl NewConnectionId {
     pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
-        out.write(Type::NEW_CONNECTION_ID);
+        out.write(self.get_type());
+        if let Some(id) = self.path_id {
+            out.write(id);
+        }
         out.write_var(self.sequence);
         out.write_var(self.retire_prior_to);
         out.write(self.id.len() as u8);
         out.put_slice(&self.id);
         out.put_slice(&self.reset_token);
+    }
+
+    pub(crate) fn get_type(&self) -> Type {
+        if self.path_id.is_some() {
+            Type::PATH_NEW_CONNECTION_ID
+        } else {
+            Type::NEW_CONNECTION_ID
+        }
+    }
+
+    fn read<R: Buf>(bytes: &mut R, read_path: bool) -> Result<Self, IterErr> {
+        let path_id = if read_path { Some(bytes.get()?) } else { None };
+        let sequence = bytes.get_var()?;
+        let retire_prior_to = bytes.get_var()?;
+        if retire_prior_to > sequence {
+            return Err(IterErr::Malformed);
+        }
+        let length = bytes.get::<u8>()? as usize;
+        if length > MAX_CID_SIZE || length == 0 {
+            return Err(IterErr::Malformed);
+        }
+        if length > bytes.remaining() {
+            return Err(IterErr::UnexpectedEnd);
+        }
+        let mut stage = [0; MAX_CID_SIZE];
+        bytes.copy_to_slice(&mut stage[0..length]);
+        let id = ConnectionId::new(&stage[..length]);
+        if bytes.remaining() < 16 {
+            return Err(IterErr::UnexpectedEnd);
+        }
+        let mut reset_token = [0; RESET_TOKEN_SIZE];
+        bytes.copy_to_slice(&mut reset_token);
+        Ok(NewConnectionId {
+            path_id,
+            sequence,
+            retire_prior_to,
+            id,
+            reset_token: reset_token.into(),
+        })
     }
 }
 
@@ -1152,6 +1173,26 @@ mod test {
         assert_eq!(decoded.len(), 1);
         match decoded.pop().expect("non empty") {
             Frame::PathAvailable(decoded) => assert_eq!(decoded, path_avaiable),
+            x => panic!("incorrect frame {x:?}"),
+        }
+    }
+
+    #[test]
+    fn test_path_new_connection_id_roundtrip() {
+        let cid = NewConnectionId {
+            path_id: Some(VarInt(22)),
+            sequence: 31,
+            retire_prior_to: 13,
+            id: ConnectionId::new(&[0xAB; 8]),
+            reset_token: ResetToken::from([0xCD; crate::RESET_TOKEN_SIZE]),
+        };
+        let mut buf = Vec::new();
+        cid.encode(&mut buf);
+
+        let mut decoded = frames(buf);
+        assert_eq!(decoded.len(), 1);
+        match decoded.pop().expect("non empty") {
+            Frame::NewConnectionId(decoded) => assert_eq!(decoded, cid),
             x => panic!("incorrect frame {x:?}"),
         }
     }

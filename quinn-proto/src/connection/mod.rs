@@ -3181,6 +3181,7 @@ impl Connection {
                 "NEW_CONNECTION_ID"
             );
             frame::NewConnectionId {
+                path_id: None, // TODO(@divma): multipath!
                 sequence: issued.sequence,
                 retire_prior_to: self.local_cid_state.retire_prior_to(),
                 id: issued.id,
@@ -3308,6 +3309,7 @@ impl Connection {
         trace!("negotiated max idle timeout {:?}", self.idle_timeout);
         if let Some(ref info) = params.preferred_address {
             self.rem_cids.insert(frame::NewConnectionId {
+                path_id: None, // TODO(@divma): use
                 sequence: 1,
                 id: info.connection_id,
                 reset_token: info.stateless_reset_token,
