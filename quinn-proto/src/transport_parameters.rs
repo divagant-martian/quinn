@@ -99,6 +99,9 @@ macro_rules! make_struct {
             pub(crate) stateless_reset_token: Option<ResetToken>,
             /// The server's preferred address for communication after handshake completion
             pub(crate) preferred_address: Option<PreferredAddress>,
+
+            // Multipath extension
+            pub(crate) initial_max_path_id: Option<VarInt>,
         }
 
         // We deliberately don't implement the `Default` trait, since that would be public, and
@@ -120,6 +123,8 @@ macro_rules! make_struct {
                     retry_src_cid: None,
                     stateless_reset_token: None,
                     preferred_address: None,
+
+                    initial_max_path_id: None,
                 }
             }
         }
@@ -181,6 +186,7 @@ impl TransportParameters {
                 "0-RTT accepted with incompatible transport parameters",
             ));
         }
+        // TODO(@divma): multipath validations?
         Ok(())
     }
 
@@ -349,6 +355,13 @@ impl TransportParameters {
             w.write_var(x.size() as u64);
             w.write(x);
         }
+
+        // multipath transport parameter
+        if let Some(val) = self.initial_max_path_id {
+            w.write_var(0x0f739bbc1b666d11);
+            w.write_var(val.size() as u64);
+            w.write(val);
+        }
     }
 
     /// Decode `TransportParameters` from buffer
@@ -413,6 +426,19 @@ impl TransportParameters {
                     _ => return Err(Error::Malformed),
                 },
                 0xff04de1b => params.min_ack_delay = Some(r.get().unwrap()),
+                0x0f739bbc1b666d11 => {
+                    if params.initial_max_path_id.is_some() {
+                        return Err(Error::Malformed);
+                    }
+
+                    let value: VarInt = r.get()?;
+                    if len != value.size() {
+                        return Err(Error::Malformed);
+                    }
+
+                    params.initial_max_path_id = Some(value);
+                    tracing::debug!(initial_max_path_id=%value, "multipath enabled");
+                }
                 _ => {
                     macro_rules! parse {
                         {$($(#[$doc:meta])* $name:ident ($code:expr) = $default:expr,)*} => {
@@ -499,6 +525,7 @@ mod test {
             }),
             grease_quic_bit: true,
             min_ack_delay: Some(2_000u32.into()),
+            initial_max_path_id: Some(VarInt::MAX),
             ..TransportParameters::default()
         };
         params.write(&mut buf);
