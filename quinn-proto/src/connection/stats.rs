@@ -54,6 +54,7 @@ pub struct FrameStats {
     pub streams_blocked_uni: u64,
     pub stop_sending: u64,
     pub stream: u64,
+    pub path_abandon: u64,
 }
 
 impl FrameStats {
@@ -61,6 +62,7 @@ impl FrameStats {
         match frame {
             Frame::Padding => {}
             Frame::Ping => self.ping += 1,
+            // TODO(@divma): path acks independently?
             Frame::Ack(_) => self.acks += 1,
             Frame::ResetStream(_) => self.reset_stream += 1,
             Frame::StopSending(_) => self.stop_sending += 1,
@@ -94,6 +96,7 @@ impl FrameStats {
             Frame::AckFrequency(_) => self.ack_frequency += 1,
             Frame::ImmediateAck => self.immediate_ack += 1,
             Frame::HandshakeDone => self.handshake_done = self.handshake_done.saturating_add(1),
+            Frame::PathAbandon(_) => self.path_abandon = self.path_abandon.saturating_add(1),
         }
     }
 }

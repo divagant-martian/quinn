@@ -136,6 +136,7 @@ frame_types! {
     // Multipath
     PATH_ACK = 0x15228c00,
     PATH_ACK_ECN = 0x15228c01,
+    PATH_ABANDON = 0x15228c08,
 }
 
 const STREAM_TYS: RangeInclusive<u64> = RangeInclusive::new(0x08, 0x0f);
@@ -166,6 +167,7 @@ pub(crate) enum Frame {
     AckFrequency(AckFrequency),
     ImmediateAck,
     HandshakeDone,
+    PathAbandon(PathAbandon),
 }
 
 impl Frame {
@@ -187,6 +189,7 @@ impl Frame {
             StreamsBlocked { dir: Dir::Uni, .. } => Type::STREAMS_BLOCKED_UNI,
             StopSending { .. } => Type::STOP_SENDING,
             RetireConnectionId { .. } => Type::RETIRE_CONNECTION_ID,
+            // TODO(@divma): wth?
             Ack(_) => Type::ACK,
             Stream(ref x) => {
                 let mut ty = *STREAM_TYS.start();
@@ -207,6 +210,7 @@ impl Frame {
             AckFrequency(_) => Type::ACK_FREQUENCY,
             ImmediateAck => Type::IMMEDIATE_ACK,
             HandshakeDone => Type::HANDSHAKE_DONE,
+            PathAbandon(_) => Type::PATH_ABANDON,
         }
     }
 
@@ -704,6 +708,7 @@ impl Iter {
                 reordering_threshold: self.bytes.get()?,
             }),
             Type::IMMEDIATE_ACK => Frame::ImmediateAck,
+            Type::PATH_ABANDON => Frame::PathAbandon(PathAbandon::read(&mut self.bytes)?),
             _ => {
                 if let Some(s) = ty.stream() {
                     Frame::Stream(Stream {
@@ -948,7 +953,35 @@ impl AckFrequency {
 
 /* Multipath <https://datatracker.ietf.org/doc/draft-ietf-quic-multipath/> */
 
-// pub(crate)
+// TODO(@divma): AbandonPath? PathAbandon is the name in the spec....
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PathAbandon {
+    path_id: VarInt,
+    // TODO(@divma):
+    // unclear if this is transport error code. It mentions NO_ERROR(0x0) which matches the no
+    // error erro code of transport parameters.. but it would just be something else?
+    //
+    // maybe being a frame this is just a transport error code??
+    error_code: TransportErrorCode,
+}
+
+impl PathAbandon {
+    // TODO(@divma): docs
+    pub(crate) fn write<W: BufMut>(&self, buf: &mut W) {
+        buf.write(Type::PATH_ABANDON);
+        buf.write(self.path_id);
+        buf.write(self.error_code);
+    }
+
+    // TODO(@divma): docs
+    // should only be called after the frame type has been verified
+    pub(crate) fn read<R: Buf>(bytes: &mut R) -> coding::Result<Self> {
+        Ok(Self {
+            path_id: bytes.get()?,
+            error_code: bytes.get()?,
+        })
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -1047,5 +1080,22 @@ mod test {
         let frames = frames(buf);
         assert_eq!(frames.len(), 1);
         assert_matches!(&frames[0], Frame::ImmediateAck);
+    }
+
+    #[test]
+    fn test_path_abandon_roundtrip() {
+        let abandon = PathAbandon {
+            path_id: VarInt(42),
+            error_code: TransportErrorCode::NO_ERROR,
+        };
+        let mut buf = Vec::new();
+        abandon.write(&mut buf);
+
+        let mut decoded = frames(buf);
+        assert_eq!(decoded.len(), 1);
+        match decoded.pop().expect("non empty") {
+            Frame::PathAbandon(decoded) => assert_eq!(decoded, abandon),
+            x => panic!("incorrect frame {x:?}"),
+        }
     }
 }

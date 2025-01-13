@@ -1343,6 +1343,7 @@ impl Connection {
         space: SpaceId,
         ack: frame::Ack,
     ) -> Result<(), TransportError> {
+        // TODO(@divma): check path id
         if ack.largest >= self.spaces[space].next_packet_number {
             return Err(TransportError::PROTOCOL_VIOLATION("unsent packet acked"));
         }
@@ -2875,6 +2876,9 @@ impl Connection {
                     if self.spaces[SpaceId::Handshake].crypto.is_some() {
                         self.discard_space(now, SpaceId::Handshake);
                     }
+                }
+                Frame::PathAbandon(_) => {
+                    // TODO(@divma): jump ship?
                 }
             }
         }
