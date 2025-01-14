@@ -11,8 +11,8 @@ use crate::{coding, congestion, packet::SpaceId, TransportConfig, TIMER_GRANULAR
 
 /// Id representing different paths when using multipath extension
 // TODO(@divma): improve docs
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct PathId(u32);
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub struct PathId(pub(crate) u32);
 
 impl coding::Codec for PathId {
     fn decode<B: bytes::Buf>(r: &mut B) -> coding::Result<Self> {

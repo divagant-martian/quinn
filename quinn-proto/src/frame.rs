@@ -9,6 +9,7 @@ use tinyvec::TinyVec;
 
 use crate::{
     coding::{self, BufExt, BufMutExt, UnexpectedEnd},
+    connection::PathId,
     range_set::ArrayRangeSet,
     shared::{ConnectionId, EcnCodepoint},
     Dir, ResetToken, StreamId, TransportError, TransportErrorCode, VarInt, MAX_CID_SIZE,
@@ -215,7 +216,7 @@ impl Frame {
             ImmediateAck => Type::IMMEDIATE_ACK,
             HandshakeDone => Type::HANDSHAKE_DONE,
             PathAbandon(_) => Type::PATH_ABANDON,
-            PathAvailable(ref path_avaiable) => path_avaiable.get_type(),
+            PathAvailable(ref path_available) => path_available.get_type(),
         }
     }
 
@@ -352,7 +353,7 @@ impl ApplicationClose {
 // TODO(@divma): for now reusing the struct, good or bad idea?
 #[derive(Clone, Eq, PartialEq)]
 pub struct Ack {
-    pub path_id: Option<VarInt>,
+    pub path_id: Option<PathId>,
     pub largest: u64,
     pub delay: u64,
     pub additional: Bytes,
@@ -392,7 +393,7 @@ impl<'a> IntoIterator for &'a Ack {
 
 impl Ack {
     pub fn encode<W: BufMut>(
-        path_id: Option<VarInt>,
+        path_id: Option<PathId>,
         delay: u64,
         ranges: &ArrayRangeSet,
         ecn: Option<&EcnCounts>,
@@ -869,7 +870,7 @@ impl StopSending {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct NewConnectionId {
-    pub(crate) path_id: Option<VarInt>,
+    pub(crate) path_id: Option<PathId>,
     pub(crate) sequence: u64,
     pub(crate) retire_prior_to: u64,
     pub(crate) id: ConnectionId,
@@ -985,7 +986,7 @@ impl AckFrequency {
 // TODO(@divma): AbandonPath? PathAbandon is the name in the spec....
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PathAbandon {
-    path_id: VarInt,
+    path_id: PathId,
     // TODO(@divma): this is TransportErrorCode plus two new errors
     error_code: TransportErrorCode,
 }
@@ -1012,7 +1013,7 @@ impl PathAbandon {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PathAvailable {
     is_backup: bool,
-    path_id: VarInt,
+    path_id: PathId,
     status_seq_no: VarInt,
 }
 
@@ -1045,6 +1046,8 @@ impl PathAvailable {
 
 #[cfg(test)]
 mod test {
+    use std::u32;
+
     use super::*;
     use crate::coding::Codec;
     use assert_matches::assert_matches;
@@ -1099,7 +1102,7 @@ mod test {
             ect1: 24,
             ce: 12,
         };
-        const PATH_ID: Option<VarInt> = Some(VarInt::MAX);
+        const PATH_ID: Option<PathId> = Some(PathId(u32::MAX));
         Ack::encode(PATH_ID, 42, &ranges, Some(&ECN), &mut buf);
         let frames = frames(buf);
         assert_eq!(frames.len(), 1);
@@ -1145,7 +1148,7 @@ mod test {
     #[test]
     fn test_path_abandon_roundtrip() {
         let abandon = PathAbandon {
-            path_id: VarInt(42),
+            path_id: PathId(42),
             error_code: TransportErrorCode::NO_ERROR,
         };
         let mut buf = Vec::new();
@@ -1163,7 +1166,7 @@ mod test {
     fn test_path_available_roundtrip() {
         let path_avaiable = PathAvailable {
             is_backup: true,
-            path_id: VarInt(42),
+            path_id: PathId(42),
             status_seq_no: VarInt(73),
         };
         let mut buf = Vec::new();
@@ -1180,7 +1183,7 @@ mod test {
     #[test]
     fn test_path_new_connection_id_roundtrip() {
         let cid = NewConnectionId {
-            path_id: Some(VarInt(22)),
+            path_id: Some(PathId(22)),
             sequence: 31,
             retire_prior_to: 13,
             id: ConnectionId::new(&[0xAB; 8]),
