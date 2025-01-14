@@ -2888,6 +2888,12 @@ impl Connection {
                 Frame::PathAvailable(_) => {
                     // TODO(@divma): do stuff
                 }
+                Frame::MaxPathId(_) => {
+                    // TODO(@divma): do stuff
+                }
+                Frame::PathsBlocked(_) => {
+                    // TODO(@divma): do stuff
+                }
             }
         }
 

@@ -142,6 +142,8 @@ frame_types! {
     PATH_AVAILABLE = 0x15228c08,
     PATH_NEW_CONNECTION_ID = 0x15228c09,
     PATH_RETIRE_CONNECTION_ID = 0x15228c0a,
+    MAX_PATH_ID = 0x15228c0c,
+    PATHS_BLOCKED = 0x15228c0d,
 }
 
 const STREAM_TYS: RangeInclusive<u64> = RangeInclusive::new(0x08, 0x0f);
@@ -174,6 +176,8 @@ pub(crate) enum Frame {
     HandshakeDone,
     PathAbandon(PathAbandon),
     PathAvailable(PathAvailable),
+    MaxPathId(PathId),
+    PathsBlocked(PathId),
 }
 
 impl Frame {
@@ -218,6 +222,8 @@ impl Frame {
             HandshakeDone => Type::HANDSHAKE_DONE,
             PathAbandon(_) => Type::PATH_ABANDON,
             PathAvailable(ref path_available) => path_available.get_type(),
+            MaxPathId(_) => Type::MAX_PATH_ID,
+            PathsBlocked(_) => Type::PATHS_BLOCKED,
         }
     }
 
@@ -409,6 +415,7 @@ impl fmt::Debug for Ack {
         ranges.push(']');
 
         f.debug_struct("Ack")
+            .field("path_id", &self.path_id)
             .field("largest", &self.largest)
             .field("delay", &self.delay)
             .field("ecn", &self.ecn)
@@ -733,6 +740,8 @@ impl Iter {
                 let is_backup = ty == Type::PATH_BACKUP;
                 Frame::PathAvailable(PathAvailable::read(&mut self.bytes, is_backup)?)
             }
+            Type::MAX_PATH_ID => Frame::MaxPathId(self.bytes.get()?),
+            Type::PATHS_BLOCKED => Frame::PathsBlocked(self.bytes.get()?),
             _ => {
                 if let Some(s) = ty.stream() {
                     Frame::Stream(Stream {
