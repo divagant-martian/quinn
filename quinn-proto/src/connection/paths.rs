@@ -7,7 +7,22 @@ use super::{
     pacing::Pacer,
     spaces::{PacketSpace, SentPacket},
 };
-use crate::{congestion, packet::SpaceId, TransportConfig, TIMER_GRANULARITY};
+use crate::{coding, congestion, packet::SpaceId, TransportConfig, TIMER_GRANULARITY};
+
+/// Id representing different paths when using multipath extension
+// TODO(@divma): improve docs
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct PathId(u32);
+
+impl coding::Codec for PathId {
+    fn decode<B: bytes::Buf>(r: &mut B) -> coding::Result<Self> {
+        Ok(Self(u32::decode(r)?))
+    }
+
+    fn encode<B: bytes::BufMut>(&self, w: &mut B) {
+        self.0.encode(w)
+    }
+}
 
 /// Description of a particular network path
 pub(super) struct PathData {
