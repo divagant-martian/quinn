@@ -90,6 +90,7 @@ impl FrameStats {
                 }
             }
             Frame::NewConnectionId(_) => self.new_connection_id += 1,
+            // TODO(@divma): split stats?
             Frame::RetireConnectionId { .. } => self.retire_connection_id += 1,
             Frame::PathChallenge(_) => self.path_challenge += 1,
             Frame::PathResponse(_) => self.path_response += 1,

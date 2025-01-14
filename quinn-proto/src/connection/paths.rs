@@ -10,12 +10,14 @@ use super::{
 use crate::{coding, congestion, packet::SpaceId, TransportConfig, TIMER_GRANULARITY};
 
 /// Id representing different paths when using multipath extension
-// TODO(@divma): improve docs
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+// TODO(@divma): improve docs, reconsider access to inner
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
 pub struct PathId(pub(crate) u32);
 
 impl coding::Codec for PathId {
     fn decode<B: bytes::Buf>(r: &mut B) -> coding::Result<Self> {
+        // TODO(@divma): unclear if the encoding is similar to the varint or plain u32, in any case
+        // the change needs to be done just here
         Ok(Self(u32::decode(r)?))
     }
 

@@ -141,6 +141,7 @@ frame_types! {
     PATH_BACKUP = 0x15228c07,
     PATH_AVAILABLE = 0x15228c08,
     PATH_NEW_CONNECTION_ID = 0x15228c09,
+    PATH_RETIRE_CONNECTION_ID = 0x15228c0a,
 }
 
 const STREAM_TYS: RangeInclusive<u64> = RangeInclusive::new(0x08, 0x0f);
@@ -163,7 +164,7 @@ pub(crate) enum Frame {
     StreamDataBlocked { id: StreamId, offset: u64 },
     StreamsBlocked { dir: Dir, limit: u64 },
     NewConnectionId(NewConnectionId),
-    RetireConnectionId { sequence: u64 },
+    RetireConnectionId(RetireConnectionId),
     PathChallenge(u64),
     PathResponse(u64),
     Close(Close),
@@ -193,7 +194,7 @@ impl Frame {
             StreamsBlocked { dir: Dir::Bi, .. } => Type::STREAMS_BLOCKED_BIDI,
             StreamsBlocked { dir: Dir::Uni, .. } => Type::STREAMS_BLOCKED_UNI,
             StopSending { .. } => Type::STOP_SENDING,
-            RetireConnectionId { .. } => Type::RETIRE_CONNECTION_ID,
+            RetireConnectionId(ref retire_cid) => retire_cid.get_type(),
             // TODO(@divma): wth?
             Ack(_) => Type::ACK,
             Stream(ref x) => {
@@ -222,6 +223,40 @@ impl Frame {
 
     pub(crate) fn is_ack_eliciting(&self) -> bool {
         !matches!(*self, Self::Ack(_) | Self::Padding | Self::Close(_))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RetireConnectionId {
+    pub(crate) path_id: Option<PathId>,
+    pub(crate) sequence: u64,
+}
+
+impl RetireConnectionId {
+    // TODO(@divma): docs
+    pub(crate) fn write<W: BufMut>(&self, buf: &mut W) {
+        buf.write(self.get_type());
+        if let Some(id) = self.path_id {
+            buf.write(id);
+        }
+        buf.write(self.sequence);
+    }
+
+    // TODO(@divma): docs
+    // should only be called after the frame type has been verified
+    pub(crate) fn read<R: Buf>(bytes: &mut R, read_path: bool) -> coding::Result<Self> {
+        Ok(Self {
+            path_id: if read_path { Some(bytes.get()?) } else { None },
+            sequence: bytes.get()?,
+        })
+    }
+
+    fn get_type(&self) -> Type {
+        if self.path_id.is_some() {
+            Type::PATH_RETIRE_CONNECTION_ID
+        } else {
+            Type::RETIRE_CONNECTION_ID
+        }
     }
 }
 
@@ -639,9 +674,12 @@ impl Iter {
                 id: self.bytes.get()?,
                 error_code: self.bytes.get()?,
             }),
-            Type::RETIRE_CONNECTION_ID => Frame::RetireConnectionId {
-                sequence: self.bytes.get_var()?,
-            },
+            Type::RETIRE_CONNECTION_ID | Type::PATH_RETIRE_CONNECTION_ID => {
+                Frame::RetireConnectionId(RetireConnectionId::read(
+                    &mut self.bytes,
+                    ty == Type::PATH_RETIRE_CONNECTION_ID,
+                )?)
+            }
             Type::ACK | Type::ACK_ECN | Type::PATH_ACK | Type::PATH_ACK_ECN => {
                 let path_id = if ty == Type::PATH_ACK || ty == Type::PATH_ACK_ECN {
                     Some(self.bytes.get()?)
@@ -931,6 +969,7 @@ impl NewConnectionId {
 }
 
 /// Smallest number of bytes this type of frame is guaranteed to fit within.
+// TODO(@divma): probably need to change this
 pub(crate) const RETIRE_CONNECTION_ID_SIZE_BOUND: usize = 9;
 
 /// An unreliable datagram
@@ -1196,6 +1235,23 @@ mod test {
         assert_eq!(decoded.len(), 1);
         match decoded.pop().expect("non empty") {
             Frame::NewConnectionId(decoded) => assert_eq!(decoded, cid),
+            x => panic!("incorrect frame {x:?}"),
+        }
+    }
+
+    #[test]
+    fn test_path_retire_connection_id_roundtrip() {
+        let retire_cid = RetireConnectionId {
+            path_id: Some(PathId(22)),
+            sequence: 31,
+        };
+        let mut buf = Vec::new();
+        retire_cid.write(&mut buf);
+
+        let mut decoded = frames(buf);
+        assert_eq!(decoded.len(), 1);
+        match decoded.pop().expect("non empty") {
+            Frame::RetireConnectionId(decoded) => assert_eq!(decoded, retire_cid),
             x => panic!("incorrect frame {x:?}"),
         }
     }
