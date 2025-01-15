@@ -31,8 +31,8 @@ use crate::{
     },
     token::TokenDecodeError,
     transport_parameters::{PreferredAddress, TransportParameters},
-    Instant, ResetToken, RetryToken, Side, SystemTime, Transmit, TransportConfig, TransportError,
-    INITIAL_MTU, MAX_CID_SIZE, MIN_INITIAL_SIZE, RESET_TOKEN_SIZE,
+    Duration, Instant, ResetToken, RetryToken, Side, SystemTime, Transmit, TransportConfig,
+    TransportError, INITIAL_MTU, MAX_CID_SIZE, MIN_INITIAL_SIZE, RESET_TOKEN_SIZE,
 };
 
 /// The main entry point to the library
@@ -411,6 +411,7 @@ impl Endpoint {
             self.local_cid_generator.as_ref(),
             loc_cid,
             None,
+            &mut self.rng,
         );
         let tls = config
             .crypto
@@ -571,6 +572,23 @@ impl Endpoint {
             version,
             ..
         } = incoming.packet.header;
+        let server_config =
+            server_config.unwrap_or_else(|| self.server_config.as_ref().unwrap().clone());
+
+        if server_config
+            .transport
+            .max_idle_timeout
+            .is_some_and(|timeout| {
+                incoming.received_at + Duration::from_millis(timeout.into()) <= now
+            })
+        {
+            debug!("abandoning accept of stale initial");
+            self.index.remove_initial(dst_cid);
+            return Err(AcceptError {
+                cause: ConnectionError::TimedOut,
+                response: None,
+            });
+        }
 
         if self.cids_exhausted() {
             debug!("refusing connection");
@@ -587,9 +605,6 @@ impl Endpoint {
                 )),
             });
         }
-
-        let server_config =
-            server_config.unwrap_or_else(|| self.server_config.as_ref().unwrap().clone());
 
         if incoming
             .crypto
@@ -618,6 +633,7 @@ impl Endpoint {
             self.local_cid_generator.as_ref(),
             loc_cid,
             Some(&server_config),
+            &mut self.rng,
         );
         params.stateless_reset_token = Some(ResetToken::new(&*self.config.reset_key, &loc_cid));
         params.original_dst_cid = Some(incoming.orig_dst_cid);

@@ -1,4 +1,4 @@
-#[cfg(not(any(apple, target_os = "openbsd", target_os = "solaris")))]
+#[cfg(not(any(apple, target_os = "openbsd", solarish)))]
 use std::ptr;
 use std::{
     io::{self, IoSliceMut},
@@ -15,8 +15,7 @@ use std::{
 use socket2::SockRef;
 
 use super::{
-    cmsg, log::debug, log_sendmsg_error, EcnCodepoint, RecvMeta, Transmit, UdpSockRef,
-    IO_ERROR_LOG_INTERVAL,
+    cmsg, log_sendmsg_error, EcnCodepoint, RecvMeta, Transmit, UdpSockRef, IO_ERROR_LOG_INTERVAL,
 };
 
 // Adapted from https://github.com/apple-oss-distributions/xnu/blob/8d741a5de7ff4191bf97d57b9f54c2f6d4a15585/bsd/sys/socket_private.h
@@ -91,7 +90,7 @@ impl UdpSocketState {
             || cfg!(bsd)
             || cfg!(apple)
             || cfg!(target_os = "android")
-            || cfg!(target_os = "solaris")
+            || cfg!(solarish)
         {
             cmsg_platform_space +=
                 unsafe { libc::CMSG_SPACE(mem::size_of::<libc::in6_pktinfo>() as _) as usize };
@@ -114,12 +113,12 @@ impl UdpSocketState {
 
         // mac and ios do not support IP_RECVTOS on dual-stack sockets :(
         // older macos versions also don't have the flag and will error out if we don't ignore it
-        #[cfg(not(any(target_os = "openbsd", target_os = "netbsd", target_os = "solaris")))]
+        #[cfg(not(any(target_os = "openbsd", target_os = "netbsd", solarish)))]
         if is_ipv4 || !io.only_v6()? {
             if let Err(_err) =
                 set_socket_option(&*io, libc::IPPROTO_IP, libc::IP_RECVTOS, OPTION_ON)
             {
-                debug!("Ignoring error setting IP_RECVTOS on socket: {_err:?}");
+                crate::log::debug!("Ignoring error setting IP_RECVTOS on socket: {_err:?}");
             }
         }
 
@@ -146,7 +145,7 @@ impl UdpSocketState {
                     &*io,
                     libc::IPPROTO_IPV6,
                     libc::IPV6_MTU_DISCOVER,
-                    libc::IP_PMTUDISC_PROBE,
+                    libc::IPV6_PMTUDISC_PROBE,
                 )?;
             }
         }
@@ -162,7 +161,7 @@ impl UdpSocketState {
                 )?;
             }
         }
-        #[cfg(any(bsd, apple, target_os = "solaris"))]
+        #[cfg(any(bsd, apple, solarish))]
         // IP_RECVDSTADDR == IP_SENDSRCADDR on FreeBSD
         // macOS uses only IP_RECVDSTADDR, no IP_SENDSRCADDR on macOS (the same on Solaris)
         // macOS also supports IP_PKTINFO
@@ -384,31 +383,27 @@ fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io:
         hdrs[i].msg_datalen = chunk.len();
         cnt += 1;
     }
-    let n = unsafe { sendmsg_x(io.as_raw_fd(), hdrs.as_ptr(), cnt as u32, 0) };
-    if n >= 0 {
-        return Ok(());
-    }
-    let e = io::Error::last_os_error();
-    match e.kind() {
-        io::ErrorKind::Interrupted => {
-            // Retry the transmission
-        }
-        io::ErrorKind::WouldBlock => return Err(e),
-        _ => {
-            // Other errors are ignored, since they will usually be handled
-            // by higher level retransmits and timeouts.
-            // - PermissionDenied errors have been observed due to iptable rules.
-            //   Those are not fatal errors, since the
-            //   configuration can be dynamically changed.
-            // - Destination unreachable errors have been observed for other
-            // - EMSGSIZE is expected for MTU probes. Future work might be able to avoid
-            //   these by automatically clamping the MTUD upper bound to the interface MTU.
-            if e.raw_os_error() != Some(libc::EMSGSIZE) {
-                log_sendmsg_error(&state.last_send_error, e, transmit);
+    loop {
+        let n = unsafe { sendmsg_x(io.as_raw_fd(), hdrs.as_ptr(), cnt as u32, 0) };
+        if n == -1 {
+            let e = io::Error::last_os_error();
+            match e.kind() {
+                io::ErrorKind::Interrupted => {
+                    // Retry the transmission
+                    continue;
+                }
+                io::ErrorKind::WouldBlock => return Err(e),
+                _ => {
+                    // - EMSGSIZE is expected for MTU probes. Future work might be able to avoid
+                    //   these by automatically clamping the MTUD upper bound to the interface MTU.
+                    if e.raw_os_error() != Some(libc::EMSGSIZE) {
+                        return Err(e);
+                    }
+                }
             }
         }
+        return Ok(());
     }
-    Ok(())
 }
 
 #[cfg(any(target_os = "openbsd", target_os = "netbsd", apple_slow))]
@@ -426,32 +421,30 @@ fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io:
         cfg!(apple) || cfg!(target_os = "openbsd") || cfg!(target_os = "netbsd"),
         state.sendmsg_einval(),
     );
-    let n = unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) };
-    if n == -1 {
-        let e = io::Error::last_os_error();
-        match e.kind() {
-            io::ErrorKind::Interrupted => {
-                // Retry the transmission
-            }
-            io::ErrorKind::WouldBlock => return Err(e),
-            _ => {
-                // - EMSGSIZE is expected for MTU probes. Future work might be able to avoid
-                //   these by automatically clamping the MTUD upper bound to the interface MTU.
-                if e.raw_os_error() != Some(libc::EMSGSIZE) {
-                    return Err(e);
+    loop {
+        let n = unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) };
+        if n == -1 {
+            let e = io::Error::last_os_error();
+            match e.kind() {
+                io::ErrorKind::Interrupted => {
+                    // Retry the transmission
+                    continue;
+                }
+                io::ErrorKind::WouldBlock => return Err(e),
+                _ => {
+                    // - EMSGSIZE is expected for MTU probes. Future work might be able to avoid
+                    //   these by automatically clamping the MTUD upper bound to the interface MTU.
+                    if e.raw_os_error() != Some(libc::EMSGSIZE) {
+                        return Err(e);
+                    }
                 }
             }
         }
+        return Ok(());
     }
-    Ok(())
 }
 
-#[cfg(not(any(
-    apple,
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "solaris"
-)))]
+#[cfg(not(any(apple, target_os = "openbsd", target_os = "netbsd", solarish)))]
 fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> io::Result<usize> {
     let mut names = [MaybeUninit::<libc::sockaddr_storage>::uninit(); BATCH_SIZE];
     let mut ctrls = [cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit()); BATCH_SIZE];
@@ -518,12 +511,7 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     Ok(msg_count as usize)
 }
 
-#[cfg(any(
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "solaris",
-    apple_slow
-))]
+#[cfg(any(target_os = "openbsd", target_os = "netbsd", solarish, apple_slow))]
 fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> io::Result<usize> {
     let mut name = MaybeUninit::<libc::sockaddr_storage>::uninit();
     let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit());
@@ -616,7 +604,7 @@ fn prepare_msg(
                     };
                     encoder.push(libc::IPPROTO_IP, libc::IP_PKTINFO, pktinfo);
                 }
-                #[cfg(any(bsd, apple, target_os = "solaris"))]
+                #[cfg(any(bsd, apple, solarish))]
                 {
                     if encode_src_ip {
                         let addr = libc::in_addr {
@@ -693,7 +681,7 @@ fn decode_recv(
                 ecn_bits = cmsg::decode::<u8, libc::cmsghdr>(cmsg);
             },
             // FreeBSD uses IP_RECVTOS here, and we can be liberal because cmsgs are opt-in.
-            #[cfg(not(any(target_os = "openbsd", target_os = "netbsd", target_os = "solaris")))]
+            #[cfg(not(any(target_os = "openbsd", target_os = "netbsd", solarish)))]
             (libc::IPPROTO_IP, libc::IP_RECVTOS) => unsafe {
                 ecn_bits = cmsg::decode::<u8, libc::cmsghdr>(cmsg);
             },
