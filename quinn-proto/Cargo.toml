@@ -1,6 +1,6 @@
 [package]
 name = "iroh-quinn-proto"
-version = "0.12.0"
+version = "0.13.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,9 +9,6 @@ description = "State machine for the QUIC transport protocol"
 keywords.workspace = true
 categories.workspace = true
 workspace = ".."
-
-[package.metadata.docs.rs]
-all-features = true
 
 [features]
 default = ["rustls-ring", "log"]
@@ -66,3 +63,7 @@ wasm-bindgen-test = { workspace = true }
 [lints.rust]
 # https://rust-fuzz.github.io/book/cargo-fuzz/guide.html#cfgfuzzing
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
+[package.metadata.docs.rs]
+# all non-default features except fips (cannot build on docs.rs environment)
+features = ["rustls-aws-lc-rs", "rustls-ring", "platform-verifier", "log", "rustls-log"]
