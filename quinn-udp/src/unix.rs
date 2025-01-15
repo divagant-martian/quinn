@@ -127,8 +127,7 @@ impl UdpSocketState {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
             // opportunistically try to enable GRO. See gro::gro_segments().
-            #[cfg(target_os = "linux")]
-            let _ = set_socket_option(&*io, libc::SOL_UDP, libc::UDP_GRO, OPTION_ON);
+            let _ = set_socket_option(&*io, libc::SOL_UDP, gro::UDP_GRO, OPTION_ON);
 
             // Forbid IPv4 fragmentation. Set even for IPv6 to account for IPv6 mapped IPv4 addresses.
             // Set `may_fragment` to `true` if this option is not supported on the platform.
@@ -318,12 +317,14 @@ fn send(
                     // Some network adapters and drivers do not support GSO. Unfortunately, Linux
                     // offers no easy way for us to detect this short of an EIO or sometimes EINVAL
                     // when we try to actually send datagrams using it.
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_os = "android"))]
                     if let Some(libc::EIO) | Some(libc::EINVAL) = e.raw_os_error() {
                         // Prevent new transmits from being scheduled using GSO. Existing GSO transmits
                         // may already be in the pipeline, so we need to tolerate additional failures.
                         if state.max_gso_segments() > 1 {
-                            crate::log::error!("got transmit error, halting segmentation offload");
+                            crate::log::info!(
+                                "`libc::sendmsg` failed with {e}; halting segmentation offload"
+                            );
                             state
                                 .max_gso_segments
                                 .store(1, std::sync::atomic::Ordering::Relaxed);
@@ -592,7 +593,12 @@ fn prepare_msg(
         encoder.push(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn);
     }
 
-    if let Some(segment_size) = transmit.segment_size {
+    // Only set the segment size if it is different from the size of the contents.
+    // Some network drivers don't like being told to do GSO even if there is effectively only a single segment.
+    if let Some(segment_size) = transmit
+        .segment_size
+        .filter(|segment_size| *segment_size != transmit.contents.len())
+    {
         gso::set_segment_size(&mut encoder, segment_size as u16);
     }
 
@@ -719,8 +725,8 @@ fn decode_recv(
                 let pktinfo = unsafe { cmsg::decode::<libc::in6_pktinfo, libc::cmsghdr>(cmsg) };
                 dst_ip = Some(IpAddr::V6(Ipv6Addr::from(pktinfo.ipi6_addr.s6_addr)));
             }
-            #[cfg(target_os = "linux")]
-            (libc::SOL_UDP, libc::UDP_GRO) => unsafe {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            (libc::SOL_UDP, gro::UDP_GRO) => unsafe {
                 stride = cmsg::decode::<libc::c_int, libc::cmsghdr>(cmsg) as usize;
             },
             _ => {}
@@ -767,9 +773,15 @@ pub(crate) const BATCH_SIZE: usize = 32;
 #[cfg(apple_slow)]
 pub(crate) const BATCH_SIZE: usize = 1;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 mod gso {
     use super::*;
+
+    #[cfg(not(target_os = "android"))]
+    const UDP_SEGMENT: libc::c_int = libc::UDP_SEGMENT;
+    #[cfg(target_os = "android")]
+    // TODO: Add this to libc
+    const UDP_SEGMENT: libc::c_int = 103;
 
     /// Checks whether GSO support is available by setting the UDP_SEGMENT
     /// option on a socket
@@ -785,26 +797,39 @@ mod gso {
 
         // As defined in linux/udp.h
         // #define UDP_MAX_SEGMENTS        (1 << 6UL)
-        match set_socket_option(&socket, libc::SOL_UDP, libc::UDP_SEGMENT, GSO_SIZE) {
+        match set_socket_option(&socket, libc::SOL_UDP, UDP_SEGMENT, GSO_SIZE) {
             Ok(()) => 64,
-            Err(_) => 1,
+            Err(_e) => {
+                crate::log::debug!(
+                    "failed to set `UDP_SEGMENT` socket option ({_e}); setting `max_gso_segments = 1`"
+                );
+
+                1
+            }
         }
     }
 
     pub(crate) fn set_segment_size(encoder: &mut cmsg::Encoder<libc::msghdr>, segment_size: u16) {
-        encoder.push(libc::SOL_UDP, libc::UDP_SEGMENT, segment_size);
+        encoder.push(libc::SOL_UDP, UDP_SEGMENT, segment_size);
     }
 }
 
 // On Apple platforms using the `sendmsg_x` call, UDP datagram segmentation is not
 // offloaded to the NIC or even the kernel, but instead done here in user space in
 // [`send`]) and then passed to the OS as individual `iovec`s (up to `BATCH_SIZE`).
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 mod gso {
     use super::*;
 
     pub(super) fn max_gso_segments() -> usize {
-        BATCH_SIZE
+        #[cfg(apple_fast)]
+        {
+            BATCH_SIZE
+        }
+        #[cfg(not(apple_fast))]
+        {
+            1
+        }
     }
 
     pub(super) fn set_segment_size(
@@ -815,9 +840,15 @@ mod gso {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 mod gro {
     use super::*;
+
+    #[cfg(not(target_os = "android"))]
+    pub(crate) const UDP_GRO: libc::c_int = libc::UDP_GRO;
+    #[cfg(target_os = "android")]
+    // TODO: Add this to libc
+    pub(crate) const UDP_GRO: libc::c_int = 104;
 
     pub(crate) fn gro_segments() -> usize {
         let socket = match std::net::UdpSocket::bind("[::]:0")
@@ -834,7 +865,7 @@ mod gro {
         // (get_max_udp_payload_size() * gro_segments()) is large enough to hold the largest GRO
         // list the kernel might potentially produce. See
         // https://github.com/quinn-rs/quinn/pull/1354.
-        match set_socket_option(&socket, libc::SOL_UDP, libc::UDP_GRO, OPTION_ON) {
+        match set_socket_option(&socket, libc::SOL_UDP, UDP_GRO, OPTION_ON) {
             Ok(()) => 64,
             Err(_) => 1,
         }
@@ -882,7 +913,7 @@ fn set_socket_option(
 
 const OPTION_ON: libc::c_int = 1;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 mod gro {
     pub(super) fn gro_segments() -> usize {
         1
