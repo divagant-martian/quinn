@@ -439,10 +439,10 @@ impl fmt::Debug for TransportConfig {
             .field("allow_spin", allow_spin)
             .field("datagram_receive_buffer_size", datagram_receive_buffer_size)
             .field("datagram_send_buffer_size", datagram_send_buffer_size)
-            .field("congestion_controller_factory", &"[ opaque ]")
+            // congestion_controller_factory not debug
             .field("enable_segmentation_offload", enable_segmentation_offload)
             .field("address_discovery_role", address_discovery_role)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -640,7 +640,7 @@ impl Default for MtuDiscoveryConfig {
     }
 }
 
-/// Maximum duration of inactivity to accept before timing out the connection.
+/// Maximum duration of inactivity to accept before timing out the connection
 ///
 /// This wraps an underlying [`VarInt`], representing the duration in milliseconds. Values can be
 /// constructed by converting directly from `VarInt`, or using `TryFrom<Duration>`.

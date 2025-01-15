@@ -27,7 +27,6 @@ use std::{
 };
 
 mod cid_queue;
-#[doc(hidden)]
 pub mod coding;
 mod constant_time;
 mod range_set;
@@ -52,7 +51,7 @@ pub use rustls;
 mod config;
 pub use config::{
     AckFrequencyConfig, ClientConfig, ConfigError, EndpointConfig, IdleTimeout, MtuDiscoveryConfig,
-    ServerConfig, TransportConfig,
+    ServerConfig, StdSystemTime, TimeSource, TransportConfig,
 };
 
 pub mod crypto;
