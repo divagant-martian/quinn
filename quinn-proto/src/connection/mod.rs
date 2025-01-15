@@ -20,8 +20,7 @@ use crate::{
     coding::BufMutExt,
     config::{ServerConfig, TransportConfig},
     crypto::{self, KeyPair, Keys, PacketKey},
-    frame,
-    frame::{Close, Datagram, FrameStruct, ObservedAddr},
+    frame::{self, Close, Datagram, FrameStruct, ObservedAddr},
     packet::{
         FixedLengthConnectionIdParser, Header, InitialHeader, InitialPacket, LongType, Packet,
         PacketNumber, PartialDecode, SpaceId,
@@ -34,7 +33,7 @@ use crate::{
     token::ResetToken,
     transport_parameters::TransportParameters,
     Dir, EndpointConfig, Frame, Side, StreamId, Transmit, TransportError, TransportErrorCode,
-    VarInt, MAX_STREAM_COUNT, MIN_INITIAL_SIZE, TIMER_GRANULARITY,
+    VarInt, MAX_CID_SIZE, MAX_STREAM_COUNT, MIN_INITIAL_SIZE, TIMER_GRANULARITY,
 };
 
 mod ack_frequency;
@@ -617,7 +616,16 @@ impl Connection {
                 buf.len()
             };
 
-            if !coalesce || buf_capacity - buf_end < MIN_PACKET_SPACE {
+            let tag_len = if let Some(ref crypto) = self.spaces[space_id].crypto {
+                crypto.packet.local.tag_len()
+            } else if space_id == SpaceId::Data {
+                self.zero_rtt_crypto.as_ref().expect(
+                    "sending packets in the application data space requires known 0-RTT or 1-RTT keys",
+                ).packet.tag_len()
+            } else {
+                unreachable!("tried to send {:?} packet without keys", space_id)
+            };
+            if !coalesce || buf_capacity - buf_end < MIN_PACKET_SPACE + tag_len {
                 // We need to send 1 more datagram and extend the buffer for that.
 
                 // Is 1 more datagram allowed?
@@ -795,10 +803,7 @@ impl Connection {
                 "Previous packet must have been finished"
             );
 
-            // This should really be `builder.insert()`, but `Option::insert`
-            // is not stable yet. Since we `debug_assert!(builder.is_none())` it
-            // doesn't make any functional difference.
-            let builder = builder_storage.get_or_insert(PacketBuilder::new(
+            let builder = builder_storage.insert(PacketBuilder::new(
                 now,
                 space_id,
                 self.rem_cids.active(),
@@ -3871,8 +3876,24 @@ fn get_max_ack_delay(params: &TransportParameters) -> Duration {
 
 // Prevents overflow and improves behavior in extreme circumstances
 const MAX_BACKOFF_EXPONENT: u32 = 16;
-// Minimal remaining size to allow packet coalescing
-const MIN_PACKET_SPACE: usize = 40;
+
+/// Minimal remaining size to allow packet coalescing, excluding cryptographic tag
+///
+/// This must be at least as large as the header for a well-formed empty packet to be coalesced,
+/// plus some space for frames. We only care about handshake headers because short header packets
+/// necessarily have smaller headers, and initial packets are only ever the first packet in a
+/// datagram (because we coalesce in ascending packet space order and the only reason to split a
+/// packet is when packet space changes).
+const MIN_PACKET_SPACE: usize = MAX_HANDSHAKE_OR_0RTT_HEADER_SIZE + 32;
+
+/// Largest amount of space that could be occupied by a Handshake or 0-RTT packet's header
+///
+/// Excludes packet-type-specific fields such as packet number or Initial token
+// https://www.rfc-editor.org/rfc/rfc9000.html#name-0-rtt: flags + version + dcid len + dcid +
+// scid len + scid + length + pn
+const MAX_HANDSHAKE_OR_0RTT_HEADER_SIZE: usize =
+    1 + 4 + 1 + MAX_CID_SIZE + 1 + MAX_CID_SIZE + VarInt::from_u32(u16::MAX as u32).size() + 4;
+
 /// The maximum amount of datagrams that are sent in a single transmit
 ///
 /// This can be lower than the maximum platform capabilities, to avoid excessive
