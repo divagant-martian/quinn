@@ -1,4 +1,4 @@
-use std::{cmp, time::Instant};
+use std::cmp;
 
 use bytes::Bytes;
 use rand::Rng;
@@ -8,7 +8,7 @@ use super::{spaces::SentPacket, Connection, SentFrames};
 use crate::{
     frame::{self, Close},
     packet::{Header, InitialHeader, LongType, PacketNumber, PartialEncode, SpaceId, FIXED_BIT},
-    ConnectionId, TransportError, TransportErrorCode, INITIAL_MTU,
+    ConnectionId, Instant, TransportError, TransportErrorCode, INITIAL_MTU,
 };
 
 pub(super) struct PacketBuilder {
@@ -173,12 +173,16 @@ impl PacketBuilder {
         })
     }
 
-    /// Append the minimum amount of padding such that, after encryption, the packet will occupy at
-    /// least `min_size` bytes
+    /// Append the minimum amount of padding to the packet such that, after encryption, the
+    /// enclosing datagram will occupy at least `min_size` bytes
     pub(super) fn pad_to(&mut self, min_size: u16) {
-        let prev = self.min_size;
-        self.min_size = self.datagram_start + (min_size as usize) - self.tag_len;
-        debug_assert!(self.min_size >= prev, "padding must not shrink datagram");
+        // The datagram might already have a larger minimum size than the caller is requesting, if
+        // e.g. we're coalescing packets and have populated more than `min_size` bytes with packets
+        // already.
+        self.min_size = Ord::max(
+            self.min_size,
+            self.datagram_start + (min_size as usize) - self.tag_len,
+        );
     }
 
     pub(super) fn finish_and_track(

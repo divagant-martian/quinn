@@ -980,7 +980,7 @@ impl WeakConnectionHandle {
     pub fn network_path_changed(&self) -> bool {
         if let Some(inner) = self.0.upgrade() {
             let mut inner_state = inner.state.lock("reset-congestion-state");
-            inner_state.inner.network_path_changed();
+            inner_state.inner.path_changed(Instant::now());
             true
         } else {
             false

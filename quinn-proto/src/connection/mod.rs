@@ -5,7 +5,6 @@ use std::{
     fmt, io, mem,
     net::{IpAddr, SocketAddr},
     sync::Arc,
-    time::{Duration, Instant},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -32,8 +31,9 @@ use crate::{
     },
     token::ResetToken,
     transport_parameters::TransportParameters,
-    Dir, EndpointConfig, Frame, Side, StreamId, Transmit, TransportError, TransportErrorCode,
-    VarInt, MAX_CID_SIZE, MAX_STREAM_COUNT, MIN_INITIAL_SIZE, TIMER_GRANULARITY,
+    Dir, Duration, EndpointConfig, Frame, Instant, Side, StreamId, Transmit, TransportError,
+    TransportErrorCode, VarInt, MAX_CID_SIZE, MAX_STREAM_COUNT, MIN_INITIAL_SIZE,
+    TIMER_GRANULARITY,
 };
 
 mod ack_frequency;
@@ -713,7 +713,7 @@ impl Connection {
                             break;
                         }
 
-                        // Pad the current packet to GSO segment size so it can be included in the
+                        // Pad the current datagram to GSO segment size so it can be included in the
                         // GSO batch.
                         builder.pad_to(segment_size as u16);
                     }
@@ -1328,10 +1328,12 @@ impl Connection {
     /// Currently this is the congestion controller, round-trip estimator, and the MTU
     /// discovery.
     ///
-    /// This is useful when it is know the underlying network path has changed and the old
-    /// state of these subsystems is no longer valid.
-    pub fn network_path_changed(&mut self) {
-        self.path.reset(&self.config);
+    /// This is useful when it is known the underlying network path has changed and the old
+    /// state of these subsystems is no longer valid or optimal. In this case it might be
+    /// faster or reduce loss to settle on optimal values by restarting from the initial
+    /// configuration in the [`TransportConfig`].
+    pub fn path_changed(&mut self, now: Instant) {
+        self.path.reset(now, &self.config);
     }
 
     /// Modify the number of remotely initiated streams that may be concurrently open
