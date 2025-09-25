@@ -1,5 +1,6 @@
 [package]
 name = "iroh-quinn-udp"
+# TODO(@divma): quinn-udp is in 0.5.14
 version = "0.5.12"
 edition.workspace = true
 rust-version.workspace = true
